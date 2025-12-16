@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify
-from app.extension import db, bcrypt, jwt
-from app.models import User
+from ..extension import db, bcrypt, jwt
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from datetime import timedelta
+from ..models import User
 from werkzeug.security import generate_password_hash, check_password_hash
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
@@ -37,9 +39,38 @@ def register():
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": "Utilisateur enregistre avec succes."}), 201
+
+
 # Route Login
 @auth_bp.route("/login", methods=["POST"])
 def login():
-    return jsonify({"message": "Login endpoint"}), 200
+    data = request.get_json()
+    email_or_username = data.get("email") or data.get("username")
+    password = data.get("password")
 
-
+    '''validation des donnees'''
+    if not all([email_or_username, password]):
+        return jsonify({"message": "Tout les champs sont obligatoires."}), 400
+    
+    '''verifions si l'utilisateur existe'''
+    user = User.query.filter((User.email == email_or_username) | (User.username == email_or_username)).first()
+    if not user or not bcrypt.check_password_hash(user.password, password):
+        return jsonify({"message": "Email/nom d'utilisateur ou mot de passe incorrect."}), 401
+    
+    '''creons le token d'acces'''
+    acces_token = create_access_token(
+        identity=user.id,
+        expires_delta=timedelta(hours=3)
+       
+    )
+    return jsonify({
+        'access_token': acces_token,
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'nom': user.nom,
+            'prenom': user.prenom,
+            'is_admin': user.is_admin
+        }
+    })

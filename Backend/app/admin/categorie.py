@@ -1,9 +1,9 @@
 from flask import Blueprint, request, jsonify
-from app.admin import admin_bp
+from . import admin_bp
 from flask_jwt_extended import jwt_required
-from app.models import Categorie
-from app.utils.decorators import admin_required
-from app.extension import db
+from ..models import Categorie
+from ..utils.decorators import admin_required
+from ..extension import db
 
 '''Routes pour la gestion des catégories'''
 @admin_bp.route('/categories', methods=['POST'])

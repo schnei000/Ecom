@@ -1,4 +1,4 @@
-from extension import db
+from .extension import db
 from datetime import datetime
 
 #------------------------------
@@ -139,7 +139,7 @@ class Transaction(db.Model):
     order_id = db.Column(db.Integer, db.ForeignKey('orders.id'), nullable=False)
 
     date_transaction = db.Column(db.DateTime, default=datetime.utcnow)
-    amount = db.column(db.float, nullable=False)
+    amount = db.Column(db.Float, nullable=False)
     status = db.Column(db.String(50), nullable=False, default='pending')
     payment_method = db.Column(db.String(50), nullable=False)
 
