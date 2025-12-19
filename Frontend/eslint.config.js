@@ -26,4 +26,10 @@ export default defineConfig([
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
     },
   },
+  {
+    files: ['**/*.css'],
+    rules: {
+      'no-unknown-at-rules': 'off',
+    },
+  },
 ])
