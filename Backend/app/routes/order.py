@@ -4,45 +4,26 @@ from ..extension import db
 from ..models import Order, Panier, Product, OrderItem
 
 # Creation Blueprint pour order
-order_bp = Blueprint('order',__name__)
+order_bp = Blueprint('order', __name__, url_prefix='/api')
 
-'''Ajouter un produit au panier'''
-@order_bp.route('/cart', methods=['POST'])
-@jwt_required()
-def add_to_cart():
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    product_id = data.get('product_id')
-    quantity = data.get('quantity')
-
-    if not product_id or not quantity:
-        return jsonify({"message": "product_id et quantity sont requis"}), 400
-
-    product = Product.query.get(product_id)
-    if not product:
-        return jsonify({"message": "Produit non trouvé"}), 404
-
-    if product.stock < quantity:
-        return jsonify({"message": "Stock insuffisant"}), 400
-
-    # Vérifier si le produit est déjà dans le panier
-    cart_item = Panier.query.filter_by(user_id=user_id, product_id=product_id).first()
-
-    if cart_item:
-        # Mettre à jour la quantité
-        cart_item.quantity += quantity
-    else:
-        # Ajouter un nouvel article au panier
-        cart_item = Panier(user_id=user_id, product_id=product_id, quantity=quantity)
-        db.session.add(cart_item)
-
-    db.session.commit()
-    return jsonify({"message": "Produit ajouté au panier avec succès"}), 201
-
-'''Création de la commande à partir du panier'''
+# Création de la commande à partir du panier
 @order_bp.route('/order', methods=['POST'])
 @jwt_required()
 def create_order():
+    """
+    ---
+    tags:
+      - Commandes
+    summary: Crée une commande à partir du panier de l'utilisateur.
+    description: Cette route valide le contenu du panier, vérifie les stocks, crée une commande, et vide le panier.
+    security:
+      - Bearer: []
+    responses:
+      201:
+        description: Commande créée avec succès.
+      400:
+        description: "Le panier est vide ou une erreur est survenue (ex: stock insuffisant)."
+    """
     user_id = get_jwt_identity()
     cart_items = Panier.query.filter_by(user_id=user_id).all()
 
@@ -69,7 +50,7 @@ def create_order():
             total_amount += product.price * item.quantity
             product.stock -= item.quantity
 
-            order_item = OrderItem(order_id=order.id, product_id=product.id, quantity=item.quantity, price=product.price)
+            order_item = OrderItem(order_id=order.id, product_id=product.id, quantity=item.quantity, unity_price=product.price)
             order_items.append(order_item)
 
         order.total_amount = total_amount
