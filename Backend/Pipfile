@@ -10,9 +10,19 @@ flask-migrate = "*"
 flask-bcrypt = "*"
 flask-cors = "*"
 flask-jwt-extended = "*"
+flask-limiter = "*"
 python-dotenv = "*"
+flasgger = "*"
+psycopg2-binary = "*"
+email-validator = "*"
+flask-wtf = "*"
+redis = "*"
+gunicorn = "*"
 
 [dev-packages]
+pytest = "*"
+pytest-flask = "*"
+pytest-cov = "*"
 
 [requires]
 python_version = "3.12"

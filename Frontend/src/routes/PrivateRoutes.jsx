@@ -1,13 +1,13 @@
 import {Navigate} from 'react-router-dom';
 import useAuth from '../hooks/useAuth';
 
-function privateRoutes({children}) {
-    const {isAuthentificated} = useAuth();
-    // verigions si l utilisateur est authentifier
-    if (!isAuthentificated) {
+function PrivateRoute({children}) {
+    const {isAuthenticated} = useAuth();
+    // verifions si l utilisateur est authentifie
+    if (!isAuthenticated) {
         return <Navigate to="/login" replace/>;
     }
     return children;
-    }
+}
 
-    export default PrivateRoute;
+export default PrivateRoute;

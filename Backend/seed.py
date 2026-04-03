@@ -1,6 +1,7 @@
+import os
 from app import create_app
 from app.extension import db, bcrypt
-from app.models import User, Category, Product
+from app.models import User, Category, Product, Order, OrderItem, Transaction, Panier
 
 app = create_app()
 
@@ -8,12 +9,15 @@ with app.app_context():
     print("Début du seeding de la base de données...")
 
     # Étape 1: Supprimer les données existantes pour éviter les doublons
-    # L'ordre est important à cause des clés étrangères (on supprime les enfants avant les parents)
+    # L'ordre est crucial à cause des clés étrangères (on supprime les tables dépendantes avant les tables parentes)
     print("Suppression des données existantes...")
+    OrderItem.query.delete()
+    Transaction.query.delete()
+    Panier.query.delete()
+    Order.query.delete()
     Product.query.delete()
     Category.query.delete()
     User.query.delete()
-    db.session.commit()
 
     # Étape 2: Créer des catégories
     print("Création des catégories...")
@@ -22,7 +26,9 @@ with app.app_context():
     cat_vetements = Category(name="Vêtements", description="Vêtements pour hommes, femmes et enfants.")
     
     db.session.add_all([cat_electronique, cat_livres, cat_vetements])
-    db.session.commit() # On commit pour que les catégories aient un ID
+
+    # On flush la session pour que les catégories obtiennent un ID avant de créer les produits
+    db.session.flush()
 
     # Étape 3: Créer des produits
     print("Création des produits...")
@@ -35,10 +41,13 @@ with app.app_context():
 
     # Étape 4: Créer des utilisateurs (un admin et un utilisateur normal)
     print("Création des utilisateurs...")
+    admin_password = os.environ.get("SEED_ADMIN_PASSWORD", "AdminPass123!")
+    user_password = os.environ.get("SEED_USER_PASSWORD", "UserPass123!")
+
     admin_user = User(
         username="admin",
         email="admin@example.com",
-        password_hash=bcrypt.generate_password_hash("adminpassword").decode('utf-8'),
+        password_hash=bcrypt.generate_password_hash(admin_password).decode('utf-8'),
         nom="Admin",
         prenom="Super",
         is_admin=True
@@ -47,7 +56,7 @@ with app.app_context():
     normal_user = User(
         username="johndoe",
         email="john.doe@example.com",
-        password_hash=bcrypt.generate_password_hash("userpassword").decode('utf-8'),
+        password_hash=bcrypt.generate_password_hash(user_password).decode('utf-8'),
         nom="Doe",
         prenom="John"
     )

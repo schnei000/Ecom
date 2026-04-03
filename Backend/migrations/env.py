@@ -97,6 +97,8 @@ def run_migrations_online():
     connectable = get_engine()
 
     with connectable.connect() as connection:
+        # render_as_batch=True requis pour SQLite (ALTER TABLE via recréation)
+        conf_args.setdefault('render_as_batch', True)
         context.configure(
             connection=connection,
             target_metadata=get_metadata(),

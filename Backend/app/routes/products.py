@@ -1,63 +1,124 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app, send_from_directory
+from flask_jwt_extended import get_jwt_identity
 from ..models import Product, Category
-from ..extension import db
+from ..extension import db, limiter
 from ..utils.decorators import admin_required
+from ..validators import validate_price, validate_stock, sanitize_string, ValidationError
+from ..utils.uploads import delete_product_image, parse_bool, save_product_image
+from ..utils.pagination import get_pagination_params
 
-# Blueprint public pour les produits et catégories
-products_bp = Blueprint('products', __name__, url_prefix='/api')
+products_bp = Blueprint('products', __name__, url_prefix='/api/v1')
 
-# ========== PRODUITS ==========
+
+def _get_request_payload():
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        return request.form.to_dict()
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else None
+
+
+def _parse_category_id(raw_value):
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        raise ValidationError("L'ID de la catégorie doit être un entier valide.")
+
 
 @products_bp.route('/products', methods=['GET'])
+@limiter.limit("60 per minute")
 def get_all_products():
     """
     ---
     tags:
       - Produits
-    summary: Récupère une liste paginée de produits.
+    summary: Récupère une liste paginée de produits avec filtres optionnels.
     parameters:
       - name: page
         in: query
         type: integer
-        description: Le numéro de la page à récupérer.
         default: 1
       - name: per_page
         in: query
         type: integer
-        description: Le nombre de produits par page.
         default: 10
+      - name: search
+        in: query
+        type: string
+        description: Recherche dans le nom et la description.
+      - name: min_price
+        in: query
+        type: number
+        description: Prix minimum.
+      - name: max_price
+        in: query
+        type: number
+        description: Prix maximum.
+      - name: in_stock
+        in: query
+        type: boolean
+        description: Si true, retourne uniquement les produits en stock.
+      - name: category_id
+        in: query
+        type: integer
+        description: Filtre par catégorie.
     responses:
       200:
         description: Une liste paginée de produits.
       500:
         description: Erreur interne du serveur.
     """
-    # Récupérer les arguments de pagination de l'URL, avec des valeurs par défaut
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
+    page, per_page = get_pagination_params(default_per_page=10)
+
+    search = request.args.get('search', '').strip()
+    min_price = request.args.get('min_price', type=float)
+    max_price = request.args.get('max_price', type=float)
+
+    if min_price is not None and min_price < 0:
+        return jsonify({'success': False, 'message': 'min_price ne peut pas être négatif.'}), 400
+    if max_price is not None and max_price < 0:
+        return jsonify({'success': False, 'message': 'max_price ne peut pas être négatif.'}), 400
+    if min_price is not None and max_price is not None and min_price > max_price:
+        return jsonify({'success': False, 'message': 'min_price ne peut pas être supérieur à max_price.'}), 400
+
+    in_stock = request.args.get('in_stock', '').lower() in ('true', '1', 'yes')
+    category_id = request.args.get('category_id', type=int)
 
     try:
-        # Utiliser la méthode paginate() de SQLAlchemy au lieu de .all()
-        paginated_products = Product.query.paginate(page=page, per_page=per_page, error_out=False)
-        products_list = [product.to_dict() for product in paginated_products.items]
+        query = Product.query.filter_by(is_deleted=False)
+
+        if search:
+            # Échapper les wildcards SQL pour éviter une recherche non intentionnelle
+            escaped = search.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+            like = f"%{escaped}%"
+            query = query.filter(
+                db.or_(Product.name.ilike(like), Product.description.ilike(like))
+            )
+        if min_price is not None:
+            query = query.filter(Product.price >= min_price)
+        if max_price is not None:
+            query = query.filter(Product.price <= max_price)
+        if in_stock:
+            query = query.filter(Product.stock > 0)
+        if category_id:
+            query = query.filter_by(category_id=category_id)
+
+        paginated = query.paginate(page=page, per_page=per_page, error_out=False)
 
         return jsonify({
             'success': True,
-            'data': products_list,
+            'data': [p.to_dict() for p in paginated.items],
             'pagination': {
-                'total_products': paginated_products.total,
-                'total_pages': paginated_products.pages,
-                'current_page': paginated_products.page,
-                'per_page': paginated_products.per_page,
-                'next_page': paginated_products.next_num,
-                'prev_page': paginated_products.prev_num
+                'total_products': paginated.total,
+                'total_pages': paginated.pages,
+                'current_page': paginated.page,
+                'per_page': paginated.per_page,
+                'next_page': paginated.next_num,
+                'prev_page': paginated.prev_num
             }
         }), 200
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': 'Erreur lors de la récupération des produits'
-        }), 500
+        current_app.logger.error(f"Error fetching products: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': 'Erreur lors de la récupération des produits'}), 500
 
 
 @products_bp.route('/products/<int:product_id>', methods=['GET'])
@@ -80,27 +141,27 @@ def get_product(product_id):
         description: Produit non trouvé.
     """
     try:
-        product = Product.query.get(product_id)
+        product = Product.query.filter_by(id=product_id, is_deleted=False).first()
         if not product:
-            return jsonify({
-                'success': False,
-                'error': 'NOT_FOUND',
-                'message': 'Produit non trouvé'
-            }), 404
-        
-        return jsonify({
-            'success': True,
-            'data': product.to_dict()
-        }), 200
+            return jsonify({'success': False, 'error': 'NOT_FOUND', 'message': 'Produit non trouvé'}), 404
+        return jsonify({'success': True, 'data': product.to_dict()}), 200
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': 'Erreur lors de la récupération du produit'
-        }), 500
+        current_app.logger.error(f"Error fetching product {product_id}: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': 'Erreur lors de la récupération du produit'}), 500
+
+
+@products_bp.route('/uploads/products/<path:filename>', methods=['GET'])
+@limiter.limit("600 per minute")
+def get_product_image(filename):
+    if '/' in filename or '\\' in filename:
+        return jsonify({'success': False, 'message': 'Nom de fichier invalide.'}), 400
+    upload_dir = current_app.config['PRODUCT_IMAGE_UPLOAD_FOLDER']
+    return send_from_directory(upload_dir, filename, conditional=True)
+
 
 @products_bp.route('/products', methods=['POST'])
 @admin_required
+@limiter.limit("20 per minute")
 def create_product():
     """
     ---
@@ -122,17 +183,17 @@ def create_product():
           properties:
             name:
               type: string
-              description: Nom du produit.
+              description: Nom du produit (1-120 caractères).
             description:
               type: string
               description: Description détaillée du produit.
             price:
               type: number
               format: float
-              description: Prix du produit.
+              description: Prix du produit (0.00 à 999999.99).
             stock:
               type: integer
-              description: Quantité en stock.
+              description: Quantité en stock (0 à 1000000).
             category_id:
               type: integer
               description: ID de la catégorie associée.
@@ -146,53 +207,93 @@ def create_product():
       409:
         description: Un produit avec ce nom existe déjà.
     """
-    data = request.get_json()
-    name = data.get("name")
-    price = data.get("price")
-    category_id = data.get("category_id")
-    stock = data.get("stock")
-
-    # Validation des données plus robuste (inspirée de admin/product.py)
-    if not all([name, price is not None, category_id is not None]):
-        return jsonify({
-            'success': False,
-            'message': "Le nom, le prix et l'ID de la catégorie sont obligatoires."
-        }), 400
-
-    if (isinstance(price, (int, float)) and price < 0) or (stock is not None and isinstance(stock, int) and stock < 0):
-        return jsonify({'success': False, 'message': "La valeur du prix ou du stock est invalide."}), 400
-
-    if not Category.query.get(category_id):
-        return jsonify({'success': False, 'message': "Catégorie non trouvée."}), 404
-
-    if Product.query.filter_by(name=name).first():
-        return jsonify({'success': False, 'message': "Un produit avec ce nom existe déjà."}), 409
+    saved_image_filename = None
 
     try:
+        data = _get_request_payload()
+        if not data:
+            return jsonify({'success': False, 'message': "Corps de la requête invalide."}), 400
+
+        name = (data.get("name") or "").strip()
+        description = (data.get("description") or "").strip()
+        price = data.get("price")
+        stock = data.get("stock", 0)
+        category_id = data.get("category_id")
+        image_file = request.files.get('image')
+
+        if not all([name, price is not None, category_id is not None]):
+            return jsonify({'success': False, 'message': "Le nom, le prix et l'ID de la catégorie sont obligatoires."}), 400
+
+        try:
+            name = sanitize_string(name, max_length=120)
+        except ValidationError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+
+        try:
+            price = validate_price(price)
+        except ValidationError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+
+        try:
+            stock = validate_stock(stock)
+        except ValidationError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+
+        try:
+            category_id = _parse_category_id(category_id)
+        except ValidationError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+
+        try:
+            if description:
+                description = sanitize_string(description, max_length=2000)
+        except ValidationError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+
+        category = db.session.get(Category, category_id)
+        if not category:
+            return jsonify({'success': False, 'message': "Catégorie non trouvée."}), 404
+
+        # Exclure les produits supprimés du contrôle d'unicité du nom
+        if Product.query.filter_by(name=name, is_deleted=False).first():
+            return jsonify({'success': False, 'message': "Un produit avec ce nom existe déjà."}), 409
+
+        if image_file and image_file.filename:
+            try:
+                saved_image_filename = save_product_image(image_file)
+            except ValidationError as e:
+                return jsonify({'success': False, 'message': str(e)}), 400
+
         new_product = Product(
             name=name,
-            description=data.get('description'),
+            description=description,
             price=price,
             stock=stock,
-            category_id=category_id
+            category_id=category_id,
+            image_filename=saved_image_filename
         )
+
         db.session.add(new_product)
         db.session.commit()
+        current_app.logger.info(f"Product created: {name} (id={new_product.id}) by admin")
 
         return jsonify({
             'success': True,
             'data': new_product.to_dict(),
             'message': 'Produit créé avec succès'
         }), 201
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({
-            'success': False,
-            'message': 'Erreur lors de la création du produit'
-        }), 500
+        if saved_image_filename:
+            delete_product_image(saved_image_filename)
+        current_app.logger.error(f"Error creating product: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': 'Erreur lors de la création du produit'}), 500
+
 
 @products_bp.route('/products/<int:product_id>', methods=['PUT', 'PATCH'])
 @admin_required
+@limiter.limit("20 per minute")
 def update_product(product_id):
     """
     ---
@@ -210,10 +311,23 @@ def update_product(product_id):
         in: body
         required: true
         schema:
-          $ref: '#/definitions/Product'
+          type: object
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            price:
+              type: number
+            stock:
+              type: integer
+            category_id:
+              type: integer
     responses:
       200:
         description: Produit mis à jour avec succès.
+      400:
+        description: Données invalides.
       403:
         description: Droits administrateur requis.
       404:
@@ -221,37 +335,114 @@ def update_product(product_id):
       409:
         description: Un autre produit avec ce nom existe déjà.
     """
+    saved_image_filename = None
+    old_image_filename = None
+    should_delete_old_image = False
+    should_delete_current_image = False
+
     try:
-        product = Product.query.get_or_404(product_id)
-        data = request.get_json()
+        product = Product.query.filter_by(id=product_id, is_deleted=False).first()
+        if not product:
+            return jsonify({"success": False, "message": "Produit non trouvé."}), 404
 
-        name = data.get("name")
-        if name and name != product.name:
-            if Product.query.filter(Product.name == name, Product.id != product_id).first():
-                return jsonify({"success": False, "message": "Un autre produit avec ce nom existe déjà."}), 409
-            product.name = name
+        data = _get_request_payload()
+        if not data:
+            return jsonify({'success': False, 'message': "Corps de la requête invalide."}), 400
 
-        product.description = data.get('description', product.description)
-        product.price = data.get('price', product.price)
-        product.stock = data.get('stock', product.stock)
-        product.category_id = data.get('category_id', product.category_id)
+        image_file = request.files.get('image')
+        remove_image = parse_bool(data.get('remove_image'))
+
+        if 'name' in data:
+            name = (data.get('name') or "").strip()
+            if name:
+                try:
+                    name = sanitize_string(name, max_length=120)
+                    if name != product.name:
+                        existing = Product.query.filter(
+                            Product.name == name,
+                            Product.id != product_id,
+                            Product.is_deleted == False
+                        ).first()
+                        if existing:
+                            return jsonify({"success": False, "message": "Un autre produit avec ce nom existe déjà."}), 409
+                    product.name = name
+                except ValidationError as e:
+                    return jsonify({'success': False, 'message': str(e)}), 400
+
+        if 'price' in data and data['price'] is not None:
+            try:
+                product.price = validate_price(data['price'])
+            except ValidationError as e:
+                return jsonify({'success': False, 'message': str(e)}), 400
+
+        if 'stock' in data and data['stock'] is not None:
+            try:
+                product.stock = validate_stock(data['stock'])
+            except ValidationError as e:
+                return jsonify({'success': False, 'message': str(e)}), 400
+
+        if 'description' in data:
+            description = (data.get('description') or "").strip()
+            try:
+                if description:
+                    description = sanitize_string(description, max_length=2000)
+                product.description = description
+            except ValidationError as e:
+                return jsonify({'success': False, 'message': str(e)}), 400
+
+        if 'category_id' in data:
+            category_id = data.get('category_id')
+            if category_id:
+                try:
+                    category_id = _parse_category_id(category_id)
+                except ValidationError as e:
+                    return jsonify({'success': False, 'message': str(e)}), 400
+
+                category = db.session.get(Category, category_id)
+                if not category:
+                    return jsonify({'success': False, 'message': "Catégorie non trouvée."}), 404
+                product.category_id = category_id
+
+        if image_file and image_file.filename:
+            try:
+                saved_image_filename = save_product_image(image_file)
+            except ValidationError as e:
+                return jsonify({'success': False, 'message': str(e)}), 400
+
+            old_image_filename = product.image_filename
+            product.image_filename = saved_image_filename
+            should_delete_old_image = bool(old_image_filename)
+        elif remove_image and product.image_filename:
+            old_image_filename = product.image_filename
+            product.image_filename = None
+            should_delete_current_image = True
 
         db.session.commit()
+
+        if should_delete_old_image and old_image_filename:
+            delete_product_image(old_image_filename)
+        if should_delete_current_image and old_image_filename:
+            delete_product_image(old_image_filename)
+
+        current_app.logger.info(f"Product updated: {product.name} (id={product_id}) by admin")
 
         return jsonify({
             'success': True,
             'data': product.to_dict(),
             'message': 'Produit mis à jour avec succès'
         }), 200
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({
-            'success': False,
-            'message': 'Erreur lors de la mise à jour du produit'
-        }), 500
+        if saved_image_filename:
+            delete_product_image(saved_image_filename)
+        current_app.logger.error(f"Error updating product {product_id}: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': 'Erreur lors de la mise à jour du produit'}), 500
+
 
 @products_bp.route('/products/<int:product_id>', methods=['DELETE'])
 @admin_required
+@limiter.limit("10 per minute")
 def delete_product(product_id):
     """
     ---
@@ -274,283 +465,105 @@ def delete_product(product_id):
         description: Produit non trouvé.
     """
     try:
-        product = Product.query.get_or_404(product_id)
-        db.session.delete(product)
+        product = Product.query.filter_by(id=product_id, is_deleted=False).first()
+        if not product:
+            return jsonify({"success": False, "message": "Produit non trouvé."}), 404
+
+        # Soft delete : on marque le produit comme supprimé sans le retirer de la DB
+        # Les commandes existantes gardent ainsi leur référence au produit
+        product.is_deleted = True
         db.session.commit()
+
+        current_app.logger.info(f"Product soft-deleted: {product.name} (id={product_id}) by admin")
+
         return jsonify({'success': True, 'message': 'Produit supprimé avec succès'}), 200
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({
-            'success': False, 'message': 'Erreur lors de la suppression du produit'
-        }), 500
+        current_app.logger.error(f"Error deleting product {product_id}: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': 'Erreur lors de la suppression du produit'}), 500
 
 
-# ========== CATÉGORIES ==========
-
-@products_bp.route('/categories', methods=['GET'])
-def get_all_categories():
-    """
-    ---
-    tags:
-      - Catégories
-    summary: Récupère une liste paginée de catégories.
-    parameters:
-      - name: page
-        in: query
-        type: integer
-        description: Le numéro de la page à récupérer.
-        default: 1
-      - name: per_page
-        in: query
-        type: integer
-        description: Le nombre de catégories par page.
-        default: 10
-    responses:
-      200:
-        description: Une liste paginée de catégories.
-      500:
-        description: Erreur interne du serveur.
-    """
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
-
-    try:
-        paginated_categories = Category.query.paginate(page=page, per_page=per_page, error_out=False)
-        categories_list = [categorie.to_dict() for categorie in paginated_categories.items]
-        return jsonify({
-            'success': True,
-            'data': categories_list,
-            'pagination': {
-                'total_categories': paginated_categories.total,
-                'total_pages': paginated_categories.pages,
-                'current_page': paginated_categories.page,
-                'per_page': paginated_categories.per_page,
-                'next_page': paginated_categories.next_num,
-                'prev_page': paginated_categories.prev_num
-            }
-        }), 200
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': 'Erreur lors de la récupération des catégories'
-        }), 500
-
-
-@products_bp.route('/categories/<int:category_id>', methods=['GET'])
-def get_category(category_id):
-    """
-    ---
-    tags:
-      - Catégories
-    summary: Récupère les détails d'une catégorie spécifique par son ID.
-    parameters:
-      - name: category_id
-        in: path
-        type: integer
-        required: true
-        description: L'ID unique de la catégorie.
-    responses:
-      200:
-        description: Détails de la catégorie.
-      404:
-        description: Catégorie non trouvée.
-    """
-    try:
-        category = Category.query.get(category_id)
-        if not category:
-            return jsonify({
-                'success': False,
-                'error': 'NOT_FOUND',
-                'message': 'Catégorie non trouvée'
-            }), 404
-        
-        return jsonify({
-            'success': True,
-            'data': category.to_dict()
-        }), 200
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': 'Erreur lors de la récupération de la catégorie'
-        }), 500
-
-@products_bp.route('/categories/<int:category_id>/products', methods=['GET'])
-def get_products_by_category(category_id):
-    """
-    ---
-    tags:
-      - Catégories
-    summary: Récupère une liste paginée de produits pour une catégorie spécifique.
-    parameters:
-      - name: category_id
-        in: path
-        type: integer
-        required: true
-        description: L'ID de la catégorie.
-      - name: page
-        in: query
-        type: integer
-        description: Le numéro de la page à récupérer.
-        default: 1
-      - name: per_page
-        in: query
-        type: integer
-        description: Le nombre de produits par page.
-        default: 10
-    responses:
-      200:
-        description: Une liste paginée de produits.
-      404:
-        description: Catégorie non trouvée.
-    """
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
-
-    try:
-        # On s'assure que la catégorie existe avant de requêter les produits
-        category = Category.query.get_or_404(category_id)
-        paginated_products = Product.query.filter_by(category_id=category.id).paginate(page=page, per_page=per_page, error_out=False)
-        products_list = [product.to_dict() for product in paginated_products.items]
-
-        return jsonify({
-            'success': True,
-            'data': products_list,
-            'pagination': {'total_products': paginated_products.total, 'total_pages': paginated_products.pages, 'current_page': paginated_products.page, 'per_page': paginated_products.per_page, 'next_page': paginated_products.next_num, 'prev_page': paginated_products.prev_num}
-        }), 200
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': 'Erreur lors de la récupération des produits de la catégorie'
-        }), 500
-
-@products_bp.route('/categories', methods=['POST'])
+@products_bp.route('/products/<int:product_id>/stock', methods=['PATCH'])
 @admin_required
-def create_category():
+def adjust_stock(product_id):
     """
     ---
     tags:
-      - Catégories
-    summary: Crée une nouvelle catégorie (Nécessite des droits administrateur).
+      - Produits
+    summary: Ajuste le stock d'un produit (Admin requis).
+    description: >
+      Permet un ajustement relatif (delta positif ou négatif) ou absolu du stock.
+      Utilisez 'delta' pour ajouter/retirer des unités, ou 'absolute' pour fixer une valeur exacte.
     security:
       - Bearer: []
     parameters:
+      - name: product_id
+        in: path
+        type: integer
+        required: true
       - name: body
         in: body
         required: true
         schema:
           type: object
-          required: [name]
           properties:
-            name:
-              type: string
-            description:
-              type: string
-    responses:
-      201:
-        description: Catégorie créée avec succès.
-      409:
-        description: Cette catégorie existe déjà.
-    """
-    data = request.get_json()
-    if not data or 'name' not in data:
-        return jsonify({'success': False, 'message': 'Le nom de la catégorie est requis'}), 400
-
-    if Category.query.filter_by(name=data['name']).first():
-        return jsonify({'success': False, 'message': 'Cette catégorie existe déjà'}), 409
-
-    try:
-        new_category = Category(name=data['name'], description=data.get('description'))
-        db.session.add(new_category)
-        db.session.commit()
-        return jsonify({
-            'success': True,
-            'data': new_category.to_dict(),
-            'message': 'Catégorie créée avec succès'
-        }), 201
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-@products_bp.route('/categories/<int:category_id>', methods=['PUT', 'PATCH'])
-@admin_required
-def update_category(category_id):
-    """
-    ---
-    tags:
-      - Catégories
-    summary: Met à jour une catégorie (Nécessite des droits administrateur).
-    security:
-      - Bearer: []
-    parameters:
-      - name: category_id
-        in: path
-        type: integer
-        required: true
-      - name: body
-        in: body
-        required: true
-        schema:
-          $ref: '#/definitions/Category'
+            delta:
+              type: integer
+              description: "Variation relative (ex: +10 pour réappro, -3 pour correction)"
+            absolute:
+              type: integer
+              description: "Valeur absolue du nouveau stock (prioritaire sur delta)"
     responses:
       200:
-        description: Catégorie mise à jour avec succès.
+        description: Stock mis à jour avec succès.
+      400:
+        description: Données invalides ou stock résultant négatif.
       404:
-        description: Catégorie non trouvée.
-      409:
-        description: Ce nom de catégorie est déjà utilisé.
+        description: Produit non trouvé.
     """
+    admin_id = get_jwt_identity()
+
+    product = db.session.get(Product, product_id)
+    if not product or product.is_deleted:
+        return jsonify({'success': False, 'message': 'Produit non trouvé.'}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if 'absolute' in data:
+        try:
+            new_stock = int(data['absolute'])
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': 'La valeur de stock doit être un entier.'}), 400
+        if new_stock < 0:
+            return jsonify({'success': False, 'message': 'Le stock ne peut pas être négatif.'}), 400
+        old_stock = product.stock
+        product.stock = new_stock
+    elif 'delta' in data:
+        try:
+            delta = int(data['delta'])
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': 'Le delta doit être un entier.'}), 400
+        new_stock = product.stock + delta
+        if new_stock < 0:
+            return jsonify({'success': False, 'message': f'Stock insuffisant. Stock actuel : {product.stock}, delta : {delta}.'}), 400
+        old_stock = product.stock
+        product.stock = new_stock
+    else:
+        return jsonify({'success': False, 'message': "Fournissez 'delta' ou 'absolute'."}), 400
+
     try:
-        category = Category.query.get_or_404(category_id)
-        data = request.get_json()
-
-        if 'name' in data and Category.query.filter(Category.id != category_id, Category.name == data['name']).first():
-            return jsonify({'success': False, 'message': 'Ce nom de catégorie est déjà utilisé'}), 409
-
-        category.name = data.get('name', category.name)
-        category.description = data.get('description', category.description)
-        
         db.session.commit()
-        
+        current_app.logger.warning(
+            f"ADMIN_ACTION: adjust_stock | admin_id={admin_id} | product_id={product_id} "
+            f"| old_stock={old_stock} | new_stock={product.stock}"
+        )
         return jsonify({
             'success': True,
-            'data': category.to_dict(),
-            'message': 'Catégorie mise à jour avec succès'
+            'message': 'Stock mis à jour avec succès.',
+            'data': {'product_id': product_id, 'old_stock': old_stock, 'new_stock': product.stock}
         }), 200
     except Exception as e:
         db.session.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-@products_bp.route('/categories/<int:category_id>', methods=['DELETE'])
-@admin_required
-def delete_category(category_id):
-    """
-    ---
-    tags:
-      - Catégories
-    summary: Supprime une catégorie (Nécessite des droits administrateur).
-    security:
-      - Bearer: []
-    parameters:
-      - name: category_id
-        in: path
-        type: integer
-        required: true
-    responses:
-      200:
-        description: Catégorie supprimée avec succès.
-      400:
-        description: Impossible de supprimer, des produits sont associés à cette catégorie.
-      404:
-        description: Catégorie non trouvée.
-    """
-    try:
-        category = Category.query.get_or_404(category_id)
-        if category.products:
-            return jsonify({'success': False, 'message': 'Impossible de supprimer, des produits sont associés à cette catégorie'}), 400
-        db.session.delete(category)
-        db.session.commit()
-        return jsonify({'success': True, 'message': 'Catégorie supprimée avec succès'}), 200
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        current_app.logger.error(f"Error adjusting stock for product {product_id}: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': "Erreur lors de la mise à jour du stock."}), 500

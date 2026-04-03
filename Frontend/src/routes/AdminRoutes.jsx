@@ -2,9 +2,9 @@ import {Navigate} from 'react-router-dom';
 import useAuth from '../hooks/useAuth';
 
 function AdminRoutes({children}) {
-    const {isAuthentificated, isAdmin} = useAuth();
+    const {isAuthenticated, isAdmin} = useAuth();
     // verifions si l utilisateur qui est authentifier est l administrateur
-    if (!isAuthentificated || !isAdmin) {
+    if (!isAuthenticated || !isAdmin) {
         return <Navigate to="/" replace/>;
     }
     return children;

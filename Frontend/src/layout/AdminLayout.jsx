@@ -1,19 +1,13 @@
-import NavBar from "../components/NavBar";
+import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
-import UseAuth from "../hooks/useAuth";
 
 function AdminLayout({children}) {
-    const {user} = UseAuth();
-
     return (
-        <div className = "min-h-screen bg-neutral-900 text-white">
-            <NavBar/>
-            <div className = "container mx-auto px-4 py-8">
-                <h1 className= "text-2xl font-semibold mb-6">
-                    Administrator Panel - {user?.userName}
-                </h1>
+        <div className="min-h-screen overflow-x-hidden bg-transparent text-white">
+            <Navbar/>
+            <main className="mx-auto w-full max-w-7xl px-4 pt-18 sm:px-6 lg:px-8">
                 {children}
-            </div>
+            </main>
             <Footer/>
         </div>
     )
