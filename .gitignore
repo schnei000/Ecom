@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pycache
+*.py[cod]
+
+# Virtual environments
+Backend/virtual/
+venv/
+.venv/
+
+# Pytest
+Backend/.pytest_cache/
+.pytest_cache/
+
+# Local environment files
+Backend/.env
+Backend/.env.prod
+.env
+.env.local
+.env.*.local
+
+# Runtime artifacts
+Backend/logs/
+Backend/instance/
+
+# Node
+Frontend/node_modules/
+Frontend/dist/
+Frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Artefacts de téléchargement
+wget-log
+*.log.tmp
