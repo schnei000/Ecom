@@ -134,7 +134,9 @@ class ProductionConfig(Config):
     TESTING = False
 
     # Database - required in production
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', '')
+    # Render fournit postgres:// mais SQLAlchemy 2.0 exige postgresql://
+    _db_url = os.environ.get('DATABASE_URL', '')
+    SQLALCHEMY_DATABASE_URI = _db_url.replace('postgres://', 'postgresql://', 1) if _db_url else ''
     SQLALCHEMY_ECHO = False  # Do not log queries in production
 
     # Connection pool — évite l'épuisement des connexions sous forte charge
