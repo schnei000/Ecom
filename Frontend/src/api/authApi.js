@@ -1,6 +1,6 @@
 import { apiFetch } from './apiClient';
 
-const BASE_URL = '/auth/v1';
+const BASE_URL = `${import.meta.env.VITE_API_BASE_URL ?? ''}/auth/v1`;
 
 async function register(data) {
     return apiFetch(`${BASE_URL}/register`, {

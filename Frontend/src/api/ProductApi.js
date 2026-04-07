@@ -1,6 +1,6 @@
 import { apiFetch } from './apiClient';
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1';
+const BASE_URL = `${import.meta.env.VITE_API_BASE_URL ?? ''}/api/v1`;
 
 async function fetchProducts({ categoryId, search, sort, page = 1, per_page = 12 } = {}) {
     const params = new URLSearchParams({ per_page, page });

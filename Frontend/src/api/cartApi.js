@@ -1,6 +1,6 @@
 import { apiFetch } from './apiClient';
 
-const BASE_URL = '/api/v1/panier';
+const BASE_URL = `${import.meta.env.VITE_API_BASE_URL ?? ''}/api/v1/panier`;
 
 async function getCart(token) {
     const data = await apiFetch(`${BASE_URL}/view`, {
