@@ -50,7 +50,14 @@ def create_app():
             x_for=hops, x_proto=hops, x_host=hops, x_port=hops, x_prefix=hops
         )
 
-    cors_origins = [origin.strip() for origin in app.config['CORS_ORIGINS']]
+    import re
+    cors_origins = []
+    for origin in app.config['CORS_ORIGINS']:
+        origin = origin.strip()
+        if origin.startswith('r:'):
+            cors_origins.append(re.compile(origin[2:]))
+        else:
+            cors_origins.append(origin)
     cors.init_app(app, resources={
         r"/api/v1/*": {"origins": cors_origins},
         r"/auth/v1/*": {"origins": cors_origins},
