@@ -46,7 +46,7 @@ with app.app_context():
 
     admin_user = User(
         username="admin",
-        email="admin@example.com",
+        email=os.environ.get("SEED_ADMIN_EMAIL", "admin@example.com"),
         password_hash=bcrypt.generate_password_hash(admin_password).decode('utf-8'),
         nom="Admin",
         prenom="Super",

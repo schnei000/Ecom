@@ -27,6 +27,56 @@ def _get_bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_db_url(raw_url: str):
+    """Parse DATABASE_URL manuellement pour éviter deux problèmes psycopg2/Python 3.12 :
+    - libpq tronque le username au premier '.' (ex: postgres.ref → postgres)
+    - urlparse lève ValueError si le mot de passe contient des crochets [ ]
+    Retourne un objet SQLAlchemy URL ou la chaîne brute si ce n'est pas postgresql."""
+    if not raw_url or not raw_url.startswith(('postgresql://', 'postgres://')):
+        return raw_url
+    from sqlalchemy.engine import URL as SAUrl
+    from urllib.parse import parse_qs, unquote
+
+    # Normalise le schéma
+    rest = raw_url.split('://', 1)[1]
+
+    # Sépare userinfo@hostinfo sur le DERNIER '@' (le mot de passe peut contenir '@')
+    at_idx = rest.rfind('@')
+    userinfo = rest[:at_idx]
+    hostinfo = rest[at_idx + 1:]
+
+    # Sépare user:password sur le PREMIER ':'
+    colon_idx = userinfo.find(':')
+    if colon_idx == -1:
+        username = unquote(userinfo)
+        password = None
+    else:
+        username = unquote(userinfo[:colon_idx])
+        password = unquote(userinfo[colon_idx + 1:])
+
+    # Sépare la query string
+    if '?' in hostinfo:
+        hostpath, query_str = hostinfo.split('?', 1)
+        query = {k: v[0] for k, v in parse_qs(query_str).items()}
+    else:
+        hostpath, query = hostinfo, {}
+
+    # Sépare host:port/database
+    host_port, _, database = hostpath.partition('/')
+    host, _, port_str = host_port.rpartition(':')
+    port = int(port_str) if port_str.isdigit() else None
+
+    return SAUrl.create(
+        drivername='postgresql+psycopg2',
+        username=username,
+        password=password,
+        host=host,
+        port=port,
+        database=database,
+        query=query,
+    )
+
+
 DEFAULT_SECRET_KEY = 'dev-secret-key-change-in-production'
 DEFAULT_JWT_ACCESS_EXPIRES = 3600
 DEFAULT_JWT_REFRESH_EXPIRES = 2592000
@@ -103,15 +153,14 @@ class Config:
 
 class DevelopmentConfig(Config):
     """Development configuration."""
-    
+
     DEBUG = True
     TESTING = False
-    SQLALCHEMY_DATABASE_URI = os.environ.get(
-        'DATABASE_URL',
-        'sqlite:///ecommerce.db'
+    SQLALCHEMY_DATABASE_URI = _parse_db_url(
+        os.environ.get('DATABASE_URL', 'sqlite:///ecommerce.db')
     )
     SQLALCHEMY_ECHO = True  # Log SQL queries
-    
+
     # Less strict in development
     SESSION_COOKIE_SECURE = False
 
@@ -134,9 +183,7 @@ class ProductionConfig(Config):
     TESTING = False
 
     # Database - required in production
-    # Render fournit postgres:// mais SQLAlchemy 2.0 exige postgresql://
-    _db_url = os.environ.get('DATABASE_URL', '')
-    SQLALCHEMY_DATABASE_URI = _db_url.replace('postgres://', 'postgresql://', 1) if _db_url else ''
+    SQLALCHEMY_DATABASE_URI = _parse_db_url(os.environ.get('DATABASE_URL', ''))
     SQLALCHEMY_ECHO = False  # Do not log queries in production
 
     # Connection pool — évite l'épuisement des connexions sous forte charge
