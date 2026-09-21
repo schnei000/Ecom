@@ -27,7 +27,6 @@
 - [Modèles de données](#modèles-de-données)
 - [Référence API](#référence-api)
 - [Installation](#installation)
-- [Variables d'environnement](#variables-denvironnement)
 - [Tests](#tests)
 - [Déploiement](#déploiement)
 - [Sécurité](#sécurité)
@@ -380,59 +379,7 @@ Les mots de passe sont lus depuis les variables d'environnement `SEED_ADMIN_PASS
 
 ## Variables d'environnement
 
-### Backend — `.env`
 
-```env
-# Flask
-FLASK_ENV=development          # development | production
-FLASK_DEBUG=false
-
-# Sécurité (OBLIGATOIRE en production)
-SECRET_KEY=change-me
-JWT_SECRET_KEY=change-me
-
-# Base de données
-DATABASE_URL=sqlite:///ecommerce.db
-# Production : postgresql://user:password@host:port/dbname
-
-# JWT
-JWT_ACCESS_TOKEN_EXPIRES=3600      # 1 heure (secondes)
-JWT_REFRESH_TOKEN_EXPIRES=2592000  # 30 jours (secondes)
-
-# CORS
-CORS_ORIGINS=http://localhost:5173
-
-# Rate Limiting
-RATELIMIT_STORAGE_URI=memory://    # Développement
-# RATELIMIT_STORAGE_URI=redis://localhost:6379  # Production avec Redis
-
-# Uploads produits
-PRODUCT_IMAGE_UPLOAD_FOLDER=instance/uploads/products
-
-# Email (réinitialisation de mot de passe)
-SMTP_HOST=sandbox.smtp.mailtrap.io
-SMTP_PORT=587
-SMTP_USER=votre_user
-SMTP_PASSWORD=votre_password
-FRONTEND_URL=http://localhost:5173
-
-# Données seed
-SEED_ADMIN_PASSWORD=AdminPass123!
-SEED_USER_PASSWORD=UserPass123!
-
-# Serveur
-SERVER_HOST=127.0.0.1
-SERVER_PORT=5000
-LOG_LEVEL=INFO
-```
-
-### Frontend — `.env`
-
-```env
-VITE_API_BASE_URL=http://localhost:5000
-```
-
----
 
 ## Tests
 
@@ -525,50 +472,6 @@ Puis redéployer le backend.
 | `CORS_ORIGINS` | URL Vercel réelle |
 | `RATELIMIT_STORAGE_URI` | `memory://` (ou URL Redis pour la montée en charge) |
 
----
-
-## Sécurité
-
-### OWASP Top 10
-
-| Catégorie | Implémentation |
-|---|---|
-| A01 Broken Access Control | `@admin_required` avec re-vérification en BDD à chaque requête |
-| A02 Cryptographic Failures | Bcrypt (12 rounds) + JWT HS256 |
-| A03 Injection | SQLAlchemy ORM + requêtes paramétrées |
-| A05 Security Misconfiguration | Headers OWASP sur toutes les réponses |
-| A07 Authentication Failures | Rate limiting par endpoint + rotation de tokens |
-| A09 Logging Failures | Logging structuré avec masquage des données sensibles |
-
-### Headers de sécurité (toutes les réponses)
-
-```
-X-Frame-Options: DENY
-X-Content-Type-Options: nosniff
-X-XSS-Protection: 1; mode=block
-Content-Security-Policy: default-src 'self'
-Strict-Transport-Security: max-age=31536000; includeSubDomains  (production uniquement)
-```
-
-### Autres protections
-
-- **Timing attacks** : hash factice exécuté même si l'utilisateur n'existe pas
-- **Overselling** : verrous `SELECT FOR UPDATE` sur le stock lors de l'ajout au panier
-- **Double paiement** : contrainte d'unicité `ref_externe` sur les transactions
-- **Token volé** : table `TokenBlocklist` + purge probabiliste (1/100) des tokens expirés
-- **Soft delete** : les données utilisateurs et produits sont conservées pour l'audit
-
----
-
-## Auteur
-
-**[Votre Nom]**
-
-- Portfolio : [votre-site.com](#)
-- LinkedIn : [linkedin.com/in/votre-profil](#)
-- GitHub : [@votre-username](#)
-
----
 
 <div align="center">
 
